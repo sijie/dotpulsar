@@ -1,5 +1,6 @@
 ﻿using DotPulsar.Internal.Abstractions;
 using DotPulsar.Internal.PulsarApi;
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -7,16 +8,16 @@ using System.Threading.Tasks;
 
 namespace DotPulsar.Internal
 {
-    public sealed class ConsumerStreamFactory : IConsumerStreamFactory
+    public sealed class ReaderStreamFactory : IReaderStreamFactory
     {
         private readonly IConnectionPool _connectionPool;
-        private readonly IStateManager<ConsumerState> _stateManager;
+        private readonly IStateManager<ReaderState> _stateManager;
         private readonly IExecute _executor;
         private readonly CommandSubscribe _subscribe;
         private readonly uint _messagePrefetchCount;
         private readonly BatchHandler _batchHandler;
 
-        public ConsumerStreamFactory(IConnectionPool connectionPool, IStateManager<ConsumerState> stateManager, IExecute executor, ConsumerOptions options)
+        public ReaderStreamFactory(IConnectionPool connectionPool, IStateManager<ReaderState> stateManager, IExecute executor, ReaderOptions options)
         {
             _connectionPool = connectionPool;
             _stateManager = stateManager;
@@ -25,36 +26,36 @@ namespace DotPulsar.Internal
 
             _subscribe = new CommandSubscribe
             {
-                ConsumerName = options.ConsumerName,
-                initialPosition = (CommandSubscribe.InitialPosition)options.InitialPosition,
-                PriorityLevel = options.PriorityLevel,
+                ConsumerName = options.ReaderName,
+                Durable = false,
                 ReadCompacted = options.ReadCompacted,
-                Subscription = options.SubscriptionName,
-                Topic = options.Topic,
-                Type = (CommandSubscribe.SubType)options.SubscriptionType
+                StartMessageId = options.StartMessageId.Data,
+                Subscription = "Reader-" + Guid.NewGuid().ToString("N"),
+                Topic = options.Topic
             };
 
-            _batchHandler = new BatchHandler(true);
+            _batchHandler = new BatchHandler(false);
         }
 
-        public async IAsyncEnumerable<IConsumerStream> Streams([EnumeratorCancellation] CancellationToken cancellationToken)
+        public ValueTask DisposeAsync()
+        {
+            _stateManager.SetState(ReaderState.Closed);
+            return new ValueTask();
+        }
+
+        public async IAsyncEnumerable<IReaderStream> Streams([EnumeratorCancellation] CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                using var proxy = new ConsumerProxy(_stateManager, new AsyncQueue<MessagePackage>());
+                using var proxy = new ReaderProxy(_stateManager, new AsyncQueue<MessagePackage>());
                 var stream = await _executor.Execute(() => GetStream(proxy, cancellationToken), cancellationToken);
                 yield return stream;
-
-                if (_subscribe.Type == CommandSubscribe.SubType.Failover)
-                    await _stateManager.StateChangedFrom(ConsumerState.Disconnected, cancellationToken);
-                else
-                    proxy.Active();
-
-                await _stateManager.StateChangedTo(ConsumerState.Disconnected, cancellationToken);
+                proxy.Active();
+                await _stateManager.StateChangedTo(ReaderState.Disconnected, cancellationToken);
             }
         }
 
-        private async ValueTask<IConsumerStream> GetStream(ConsumerProxy proxy, CancellationToken cancellationToken)
+        private async ValueTask<IReaderStream> GetStream(ReaderProxy proxy, CancellationToken cancellationToken)
         {
             var connection = await _connectionPool.FindConnectionForTopic(_subscribe.Topic, cancellationToken);
             var response = await connection.Send(_subscribe, proxy);

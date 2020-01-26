@@ -7,6 +7,7 @@
         Disconnected,
         Faulted,
         Inactive,
-        ReachedEndOfTopic
+        ReachedEndOfTopic,
+        Unsubscribed
     }
 }

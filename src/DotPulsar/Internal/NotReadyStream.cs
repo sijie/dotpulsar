@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace DotPulsar.Internal
 {
-    public sealed class NotReadyStream : IConsumerStream, IProducerStream
+    public sealed class NotReadyStream : IConsumerStream, IReaderStream, IProducerStream
     {
         public ValueTask DisposeAsync() => new ValueTask();
 

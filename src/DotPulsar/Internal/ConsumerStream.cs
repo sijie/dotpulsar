@@ -7,12 +7,11 @@ using System.Threading.Tasks;
 
 namespace DotPulsar.Internal
 {
-    public sealed class ConsumerStream : IConsumerStream
+    public sealed class ConsumerStream : IConsumerStream, IReaderStream
     {
         private readonly ulong _id;
         private readonly IDequeue<MessagePackage> _dequeue;
-        private readonly Connection _connection;
-        private readonly IFaultStrategy _faultStrategy;
+        private readonly IConnection _connection;
         private readonly IConsumerProxy _proxy;
         private readonly BatchHandler _batchHandler;
         private readonly CommandFlow _cachedCommandFlow;
@@ -23,15 +22,13 @@ namespace DotPulsar.Internal
             ulong id,
             uint messagePrefetchCount,
             IDequeue<MessagePackage> dequeue,
-            Connection connection,
-            IFaultStrategy faultStrategy,
+            IConnection connection,
             IConsumerProxy proxy,
             BatchHandler batchHandler)
         {
             _id = id;
             _dequeue = dequeue;
             _connection = connection;
-            _faultStrategy = faultStrategy;
             _proxy = proxy;
             _batchHandler = batchHandler;
             _cachedCommandFlow = new CommandFlow { ConsumerId = id, MessagePermits = messagePrefetchCount };
@@ -83,65 +80,33 @@ namespace DotPulsar.Internal
                 command.MessageIds[0] = batchMessageId;
             }
 
-            try
-            {
-                command.ConsumerId = _id;
-                await _connection.Send(command);
-            }
-            catch (Exception exception)
-            {
-                OnException(exception);
-                throw;
-            }
+            command.ConsumerId = _id;
+            await _connection.Send(command);
         }
 
         public async Task<CommandSuccess> Send(CommandUnsubscribe command)
         {
-            try
-            {
-                command.ConsumerId = _id;
-                var response = await _connection.Send(command);
-                response.Expect(BaseCommand.Type.Success);
-                return response.Success;
-            }
-            catch (Exception exception)
-            {
-                OnException(exception);
-                throw;
-            }
+            command.ConsumerId = _id;
+            var response = await _connection.Send(command);
+            response.Expect(BaseCommand.Type.Success);
+            return response.Success;
         }
 
         public async Task<CommandSuccess> Send(CommandSeek command)
         {
-            try
-            {
-                command.ConsumerId = _id;
-                var response = await _connection.Send(command);
-                response.Expect(BaseCommand.Type.Success);
-                _batchHandler.Clear();
-                return response.Success;
-            }
-            catch (Exception exception)
-            {
-                OnException(exception);
-                throw;
-            }
+            command.ConsumerId = _id;
+            var response = await _connection.Send(command);
+            response.Expect(BaseCommand.Type.Success);
+            _batchHandler.Clear();
+            return response.Success;
         }
 
         public async Task<CommandGetLastMessageIdResponse> Send(CommandGetLastMessageId command)
         {
-            try
-            {
-                command.ConsumerId = _id;
-                var response = await _connection.Send(command);
-                response.Expect(BaseCommand.Type.GetLastMessageIdResponse);
-                return response.GetLastMessageIdResponse;
-            }
-            catch (Exception exception)
-            {
-                OnException(exception);
-                throw;
-            }
+            command.ConsumerId = _id;
+            var response = await _connection.Send(command);
+            response.Expect(BaseCommand.Type.GetLastMessageIdResponse);
+            return response.GetLastMessageIdResponse;
         }
 
         public async ValueTask DisposeAsync()
@@ -154,12 +119,6 @@ namespace DotPulsar.Internal
             {
                 // Ignore
             }
-        }
-
-        private void OnException(Exception exception)
-        {
-            if (_faultStrategy.DetermineFaultAction(exception) == FaultAction.Relookup)
-                _proxy.Disconnected();
         }
 
         private async ValueTask SendFlow()

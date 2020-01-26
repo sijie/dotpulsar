@@ -1,13 +1,14 @@
-﻿using DotPulsar.Internal.PulsarApi;
+﻿using DotPulsar.Internal.Abstractions;
+using DotPulsar.Internal.PulsarApi;
 
 namespace DotPulsar.Internal
 {
     public sealed class PingPongHandler
     {
-        private readonly Connection _connection;
+        private readonly IConnection _connection;
         private readonly CommandPong _pong;
 
-        public PingPongHandler(Connection connection)
+        public PingPongHandler(IConnection connection)
         {
             _connection = connection;
             _pong = new CommandPong();

@@ -1,6 +1,7 @@
 ﻿using DotPulsar.Internal.Abstractions;
 using DotPulsar.Internal.PulsarApi;
-using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -8,55 +9,43 @@ namespace DotPulsar.Internal
 {
     public sealed class ProducerStreamFactory : IProducerStreamFactory
     {
-        private readonly ConnectionPool _connectionPool;
-        private readonly ProducerOptions _options;
-        private readonly IFaultStrategy _faultStrategy;
+        private readonly IConnectionPool _connectionPool;
+        private readonly IStateManager<ProducerState> _stateManager;
+        private readonly IExecute _executor;
         private readonly SequenceId _sequenceId;
+        private readonly CommandProducer _commandProducer;
 
-        public ProducerStreamFactory(ConnectionPool connectionPool, ProducerOptions options, IFaultStrategy faultStrategy)
+        public ProducerStreamFactory(IConnectionPool connectionPool, IStateManager<ProducerState> stateManager, IExecute executor, ProducerOptions options)
         {
             _connectionPool = connectionPool;
-            _options = options;
-            _faultStrategy = faultStrategy;
+            _stateManager = stateManager;
+            _executor = executor;
             _sequenceId = new SequenceId(options.InitialSequenceId);
+
+            _commandProducer = new CommandProducer
+            {
+                ProducerName = options.ProducerName,
+                Topic = options.Topic
+            };
         }
 
-        public async Task<IProducerStream> CreateStream(IProducerProxy proxy, CancellationToken cancellationToken)
+        public async IAsyncEnumerable<IProducerStream> Streams([EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            var commandProducer = new CommandProducer
+            while (!cancellationToken.IsCancellationRequested)
             {
-                ProducerName = _options.ProducerName,
-                Topic = _options.Topic
-            };
-
-            while (true)
-            {
-                try
-                {
-                    var connection = await _connectionPool.FindConnectionForTopic(_options.Topic, cancellationToken);
-                    var response = await connection.Send(commandProducer, proxy);
-                    return new ProducerStream(response.ProducerId, response.ProducerName, _sequenceId, connection, _faultStrategy, proxy);
-                }
-                catch (OperationCanceledException)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                        throw;
-                    else
-                        await Task.Delay(_faultStrategy.RetryInterval, cancellationToken);
-                }
-                catch (Exception exception)
-                {
-                    switch (_faultStrategy.DetermineFaultAction(exception))
-                    {
-                        case FaultAction.Relookup:
-                        case FaultAction.Retry:
-                            await Task.Delay(_faultStrategy.RetryInterval, cancellationToken);
-                            continue;
-                    }
-
-                    throw;
-                }
+                var proxy = new ProducerProxy(_stateManager);
+                var stream = await _executor.Execute(() => GetStream(proxy, cancellationToken), cancellationToken);
+                yield return stream;
+                proxy.Connected();
+                await _stateManager.StateChangedTo(ProducerState.Disconnected, cancellationToken);
             }
+        }
+
+        private async ValueTask<IProducerStream> GetStream(ProducerProxy proxy, CancellationToken cancellationToken)
+        {
+            var connection = await _connectionPool.FindConnectionForTopic(_commandProducer.Topic, cancellationToken);
+            var response = await connection.Send(_commandProducer, proxy);
+            return new ProducerStream(response.ProducerId, response.ProducerName, _sequenceId, connection);
         }
     }
 }

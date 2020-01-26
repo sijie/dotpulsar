@@ -1,5 +1,4 @@
 ﻿using DotPulsar.Abstractions;
-using DotPulsar.Exceptions;
 using DotPulsar.Internal.Abstractions;
 using System;
 using System.Collections.Generic;
@@ -11,116 +10,87 @@ namespace DotPulsar.Internal
 {
     public sealed class Reader : IReader
     {
-        private readonly IConsumerStreamFactory _streamFactory;
-        private readonly IFaultStrategy _faultStrategy;
-        private readonly StateManager<ReaderState> _stateManager;
-        private readonly CancellationTokenSource _connectTokenSource;
-        private readonly Task _connectTask;
-        private Action _throwIfClosedOrFaulted;
-        private IConsumerStream Stream { get; set; }
+        private readonly IReaderStreamFactory _streamFactory;
+        private readonly IExecute _executor;
+        private readonly IStateChanged<ReaderState> _state;
+        private int _isDisposed;
 
-        public Reader(IConsumerStreamFactory streamFactory, IFaultStrategy faultStrategy)
+        private IReaderStream Stream { get; set; }
+
+        public Reader(IReaderStreamFactory streamFactory, IReaderStream initialStream, IExecute executor, IStateChanged<ReaderState> state)
         {
-            _stateManager = new StateManager<ReaderState>(ReaderState.Disconnected, ReaderState.Closed, ReaderState.ReachedEndOfTopic, ReaderState.Faulted);
             _streamFactory = streamFactory;
-            _faultStrategy = faultStrategy;
-            _connectTokenSource = new CancellationTokenSource();
-            Stream = new NotReadyStream();
-            _connectTask = Connect(_connectTokenSource.Token);
-            _throwIfClosedOrFaulted = () => { };
+            _executor = executor;
+            _state = state;
+            Stream = initialStream;
+            _isDisposed = 0;
+            _ = Task.Run(Connect);
         }
 
-        public async ValueTask<ReaderState> StateChangedTo(ReaderState state, CancellationToken cancellationToken) => await _stateManager.StateChangedTo(state, cancellationToken);
-        public async ValueTask<ReaderState> StateChangedFrom(ReaderState state, CancellationToken cancellationToken) => await _stateManager.StateChangedFrom(state, cancellationToken);
-        public bool IsFinalState() => _stateManager.IsFinalState();
-        public bool IsFinalState(ReaderState state) => _stateManager.IsFinalState(state);
-
-        public async ValueTask DisposeAsync()
+        public async ValueTask<ReaderState> StateChangedTo(ReaderState state, CancellationToken cancellationToken)
         {
-            _connectTokenSource.Cancel();
-            await _connectTask;
+            ThrowIfDisposed();
+            return await _state.StateChangedTo(state, cancellationToken);
+        }
+
+        public async ValueTask<ReaderState> StateChangedFrom(ReaderState state, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return await _state.StateChangedFrom(state, cancellationToken);
+        }
+
+        public bool IsFinalState()
+        {
+            ThrowIfDisposed();
+            return _state.IsFinalState();
+        }
+
+        public bool IsFinalState(ReaderState state)
+        {
+            ThrowIfDisposed();
+            return _state.IsFinalState(state);
         }
 
         public async IAsyncEnumerable<Message> Messages([EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
+
             while (!cancellationToken.IsCancellationRequested)
             {
-                Message message;
-
-                try
-                {
-                    message = await Stream.Receive(cancellationToken);
-                }
-                catch (Exception exception)
-                {
-                    if (!cancellationToken.IsCancellationRequested)
-                        await OnException(exception, cancellationToken);
-
-                    continue;
-                }
-
-                yield return message;
+                yield return await _executor.Execute(() => Stream.Receive(cancellationToken), cancellationToken);
             }
         }
 
-        private async Task OnException(Exception exception, CancellationToken cancellationToken)
+        public async ValueTask DisposeAsync()
         {
-            _throwIfClosedOrFaulted();
+            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+                return;
 
-            switch (_faultStrategy.DetermineFaultAction(exception))
-            {
-                case FaultAction.Retry:
-                    await Task.Delay(_faultStrategy.RetryInterval, cancellationToken);
-                    break;
-                case FaultAction.Relookup:
-                    await _stateManager.StateChangedTo(ReaderState.Connected, cancellationToken);
-                    break;
-                case FaultAction.Fault:
-                    HasFaulted(exception);
-                    break;
-            }
+            if (_executor is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
 
-            _throwIfClosedOrFaulted();
+            await _streamFactory.DisposeAsync();
         }
 
-        private void HasFaulted(Exception exception)
+        private async Task Connect()
         {
-            _throwIfClosedOrFaulted = () => throw exception;
-            _stateManager.SetState(ReaderState.Faulted);
-        }
-
-        private void HasClosed()
-        {
-            _throwIfClosedOrFaulted = () => throw new ReaderClosedException();
-            _stateManager.SetState(ReaderState.Closed);
-        }
-
-        private async Task Connect(CancellationToken cancellationToken)
-        {
-            await Task.Yield();
-
             try
             {
-                while (true)
+                await foreach (var stream in _streamFactory.Streams())
                 {
-                    using (var proxy = new ReaderProxy(_stateManager, new AsyncQueue<MessagePackage>()))
-                    await using (Stream = await _streamFactory.CreateStream(proxy, cancellationToken))
-                    {
-                        proxy.Active();
-                        await _stateManager.StateChangedFrom(ReaderState.Connected, cancellationToken);
-                        if (_stateManager.IsFinalState())
-                            return;
-                    }
+                    Stream = stream;
                 }
             }
-            catch (OperationCanceledException)
+            catch
             {
-                HasClosed();
+                // Ignore
             }
-            catch (Exception exception)
-            {
-                HasFaulted(exception);
-            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_isDisposed != 0)
+                throw new ObjectDisposedException(nameof(Reader));
         }
     }
 }

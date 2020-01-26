@@ -1,14 +1,13 @@
 ﻿using DotPulsar.Internal.Abstractions;
 using DotPulsar.Internal.Extensions;
 using DotPulsar.Internal.PulsarApi;
-using System;
 using System.Buffers;
 using System.IO;
 using System.Threading.Tasks;
 
 namespace DotPulsar.Internal
 {
-    public sealed class Connection : IAsyncDisposable
+    public sealed class Connection : IConnection
     {
         private readonly AsyncLock _lock;
         private readonly ProducerManager _producerManager;
@@ -29,7 +28,7 @@ namespace DotPulsar.Internal
 
         public Task IsClosed => _stream.IsClosed;
 
-        public async Task<bool> IsActive()
+        public async ValueTask<bool> IsActive()
         {
             using (await _lock.Lock())
             {

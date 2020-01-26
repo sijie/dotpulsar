@@ -13,11 +13,9 @@ namespace DotPulsar.Internal
         private readonly SendPackage _cachedSendPackage;
         private readonly ulong _id;
         private readonly SequenceId _sequenceId;
-        private readonly Connection _connection;
-        private readonly IFaultStrategy _faultStrategy;
-        private readonly IProducerProxy _proxy;
+        private readonly IConnection _connection;
 
-        public ProducerStream(ulong id, string name, SequenceId sequenceId, Connection connection, IFaultStrategy faultStrategy, IProducerProxy proxy)
+        public ProducerStream(ulong id, string name, SequenceId sequenceId, IConnection connection)
         {
             _cachedMetadata = new PulsarApi.MessageMetadata
             {
@@ -35,8 +33,6 @@ namespace DotPulsar.Internal
             _id = id;
             _sequenceId = sequenceId;
             _connection = connection;
-            _faultStrategy = faultStrategy;
-            _proxy = proxy;
         }
 
         public async ValueTask DisposeAsync()
@@ -87,13 +83,6 @@ namespace DotPulsar.Internal
                     _sequenceId.Increment();
 
                 return response.SendReceipt;
-            }
-            catch (Exception exception)
-            {
-                if (_faultStrategy.DetermineFaultAction(exception) == FaultAction.Relookup)
-                    _proxy.Disconnected();
-
-                throw;
             }
             finally
             {

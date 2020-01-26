@@ -24,6 +24,11 @@ namespace DotPulsar.Abstractions
         IPulsarClientBuilder ConnectionSecurity(EncryptionPolicy encryptionPolicy);
 
         /// <summary>
+        /// Register a custom exception handler that will be invoked before the default exception handler.
+        /// </summary>
+        IPulsarClientBuilder ExceptionHandler(IHandleException exceptionHandler);
+
+        /// <summary>
         /// The time to wait before retrying an operation or a reconnect. The default is 3 seconds.
         /// </summary>
         IPulsarClientBuilder RetryInterval(TimeSpan interval);

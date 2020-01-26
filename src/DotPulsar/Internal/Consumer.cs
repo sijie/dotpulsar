@@ -1,5 +1,4 @@
 ﻿using DotPulsar.Abstractions;
-using DotPulsar.Exceptions;
 using DotPulsar.Internal.Abstractions;
 using DotPulsar.Internal.PulsarApi;
 using System;
@@ -12,62 +11,68 @@ namespace DotPulsar.Internal
 {
     public sealed class Consumer : IConsumer
     {
-        private readonly Executor _executor;
         private readonly CommandAck _cachedCommandAck;
         private readonly IConsumerStreamFactory _streamFactory;
-        private readonly IFaultStrategy _faultStrategy;
-        private readonly bool _setProxyState;
-        private readonly StateManager<ConsumerState> _stateManager;
+        private readonly IExecute _executor;
+        private readonly IStateChanged<ConsumerState> _state;
         private readonly CancellationTokenSource _connectTokenSource;
         private readonly Task _connectTask;
-        private Action _throwIfClosedOrFaulted;
+        private int _isDisposed;
+
         private IConsumerStream Stream { get; set; }
 
-        public Consumer(IConsumerStreamFactory streamFactory, IFaultStrategy faultStrategy, bool setProxyState)
+        public Consumer(IConsumerStreamFactory streamFactory, IExecute executor, IConsumerStream initialStream, IStateChanged<ConsumerState> state)
         {
-            _executor = new Executor(OnException);
             _cachedCommandAck = new CommandAck();
-            _stateManager = new StateManager<ConsumerState>(ConsumerState.Disconnected, ConsumerState.Closed, ConsumerState.ReachedEndOfTopic, ConsumerState.Faulted);
+            _state = state;
             _streamFactory = streamFactory;
-            _faultStrategy = faultStrategy;
-            _setProxyState = setProxyState;
+            _executor = executor;
             _connectTokenSource = new CancellationTokenSource();
-            Stream = new NotReadyStream();
+            _isDisposed = 0;
+            Stream = initialStream;
             _connectTask = Connect(_connectTokenSource.Token);
-            _throwIfClosedOrFaulted = () => { };
         }
 
-        public async ValueTask<ConsumerState> StateChangedTo(ConsumerState state, CancellationToken cancellationToken) => await _stateManager.StateChangedTo(state, cancellationToken);
-        public async ValueTask<ConsumerState> StateChangedFrom(ConsumerState state, CancellationToken cancellationToken) => await _stateManager.StateChangedFrom(state, cancellationToken);
-        public bool IsFinalState() => _stateManager.IsFinalState();
-        public bool IsFinalState(ConsumerState state) => _stateManager.IsFinalState(state);
+        public async ValueTask<ConsumerState> StateChangedTo(ConsumerState state, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return await _state.StateChangedTo(state, cancellationToken);
+        }
+
+        public async ValueTask<ConsumerState> StateChangedFrom(ConsumerState state, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return await _state.StateChangedFrom(state, cancellationToken);
+        }
+
+        public bool IsFinalState()
+        {
+            ThrowIfDisposed();
+            return _state.IsFinalState();
+        }
+
+        public bool IsFinalState(ConsumerState state)
+        {
+            ThrowIfDisposed();
+            return _state.IsFinalState(state);
+        }
 
         public async ValueTask DisposeAsync()
         {
-            await _executor.DisposeAsync();
+            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+                return;
+
             _connectTokenSource.Cancel();
             await _connectTask;
         }
 
         public async IAsyncEnumerable<Message> Messages([EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
+
             while (!cancellationToken.IsCancellationRequested)
             {
-                Message message;
-
-                try
-                {
-                    message = await Stream.Receive(cancellationToken);
-                }
-                catch (Exception exception)
-                {
-                    if (!cancellationToken.IsCancellationRequested)
-                        await OnException(exception, cancellationToken);
-
-                    continue;
-                }
-
-                yield return message;
+                yield return await _executor.Execute(() => Stream.Receive(cancellationToken), cancellationToken);
             }
         }
 
@@ -85,12 +90,13 @@ namespace DotPulsar.Internal
 
         public async ValueTask Unsubscribe(CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
             _ = await _executor.Execute(() => Stream.Send(new CommandUnsubscribe()), cancellationToken);
-            HasClosed();
         }
 
         public async ValueTask Seek(MessageId messageId, CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
             var seek = new CommandSeek { MessageId = messageId.Data };
             _ = await _executor.Execute(() => Stream.Send(seek), cancellationToken);
             return;
@@ -98,12 +104,14 @@ namespace DotPulsar.Internal
 
         public async ValueTask<MessageId> GetLastMessageId(CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
             var response = await _executor.Execute(() => Stream.Send(new CommandGetLastMessageId()), cancellationToken);
             return new MessageId(response.LastMessageId);
         }
 
         private async ValueTask Acknowledge(MessageIdData messageIdData, CommandAck.AckType ackType, CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
             await _executor.Execute(() =>
             {
                 _cachedCommandAck.Type = ackType;
@@ -113,68 +121,20 @@ namespace DotPulsar.Internal
             }, cancellationToken);
         }
 
-        private async Task OnException(Exception exception, CancellationToken cancellationToken)
-        {
-            _throwIfClosedOrFaulted();
-
-            switch (_faultStrategy.DetermineFaultAction(exception))
-            {
-                case FaultAction.Retry:
-                    await Task.Delay(_faultStrategy.RetryInterval, cancellationToken);
-                    break;
-                case FaultAction.Relookup:
-                    await _stateManager.StateChangedFrom(ConsumerState.Disconnected, cancellationToken);
-                    break;
-                case FaultAction.Fault:
-                    HasFaulted(exception);
-                    break;
-            }
-
-            _throwIfClosedOrFaulted();
-        }
-
-        private void HasFaulted(Exception exception)
-        {
-            _throwIfClosedOrFaulted = () => throw exception;
-            _stateManager.SetState(ConsumerState.Faulted);
-        }
-
-        private void HasClosed()
-        {
-            _throwIfClosedOrFaulted = () => throw new ConsumerClosedException();
-            _stateManager.SetState(ConsumerState.Closed);
-        }
-
         private async Task Connect(CancellationToken cancellationToken)
         {
             await Task.Yield();
 
-            try
+            await foreach (var stream in _streamFactory.Streams(cancellationToken))
             {
-                while (true)
-                {
-                    using (var proxy = new ConsumerProxy(_stateManager, new AsyncQueue<MessagePackage>()))
-                    await using (Stream = await _streamFactory.CreateStream(proxy, cancellationToken))
-                    {
-                        if (_setProxyState)
-                            proxy.Active();
-                        else
-                            await _stateManager.StateChangedFrom(ConsumerState.Disconnected, cancellationToken);
+                Stream = stream;
+            }
+        }
 
-                        await _stateManager.StateChangedTo(ConsumerState.Disconnected, cancellationToken);
-                        if (_stateManager.IsFinalState())
-                            return;
-                    }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                HasClosed();
-            }
-            catch (Exception exception)
-            {
-                HasFaulted(exception);
-            }
+        private void ThrowIfDisposed()
+        {
+            if (_isDisposed != 0)
+                throw new ObjectDisposedException(nameof(Consumer));
         }
     }
 }

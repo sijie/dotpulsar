@@ -8,11 +8,11 @@ namespace DotPulsar.Internal
     public sealed class ConsumerProxy : IConsumerProxy, IDisposable
     {
         private readonly object _lock;
-        private readonly StateManager<ConsumerState> _stateManager;
+        private readonly IStateManager<ConsumerState> _stateManager;
         private readonly AsyncQueue<MessagePackage> _queue;
         private bool _hasDisconnected;
 
-        public ConsumerProxy(StateManager<ConsumerState> stateManager, AsyncQueue<MessagePackage> queue)
+        public ConsumerProxy(IStateManager<ConsumerState> stateManager, AsyncQueue<MessagePackage> queue)
         {
             _lock = new object();
             _stateManager = stateManager;
@@ -23,19 +23,7 @@ namespace DotPulsar.Internal
         public void Active() => SetState(ConsumerState.Active);
         public void Inactive() => SetState(ConsumerState.Inactive);
         public void ReachedEndOfTopic() => SetState(ConsumerState.ReachedEndOfTopic);
-
-        public void Disconnected()
-        {
-            lock (_lock)
-            {
-                if (_hasDisconnected)
-                    return;
-
-                _stateManager.SetState(ConsumerState.Disconnected);
-                _hasDisconnected = true;
-            }
-        }
-
+        public void Disconnected() => SetState(ConsumerState.Disconnected);
 
         public void Enqueue(MessagePackage package) => _queue.Enqueue(package);
         public async ValueTask<MessagePackage> Dequeue(CancellationToken cancellationToken) => await _queue.Dequeue(cancellationToken);
@@ -44,8 +32,11 @@ namespace DotPulsar.Internal
         {
             lock (_lock)
             {
-                if (!_hasDisconnected)
-                    _stateManager.SetState(state);
+                if (_hasDisconnected)
+                    return;
+
+                _stateManager.SetState(state);
+                _hasDisconnected = state == ConsumerState.Disconnected;
             }
         }
 

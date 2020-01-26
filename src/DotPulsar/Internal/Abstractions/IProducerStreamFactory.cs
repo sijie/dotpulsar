@@ -1,10 +1,10 @@
-﻿using System.Threading;
-using System.Threading.Tasks;
+﻿using System.Collections.Generic;
+using System.Threading;
 
 namespace DotPulsar.Internal.Abstractions
 {
     public interface IProducerStreamFactory
     {
-        Task<IProducerStream> CreateStream(IProducerProxy proxy, CancellationToken cancellationToken = default);
+        IAsyncEnumerable<IProducerStream> Streams(CancellationToken cancellationToken = default);
     }
 }

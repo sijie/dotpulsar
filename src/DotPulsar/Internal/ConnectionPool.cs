@@ -1,4 +1,5 @@
 ﻿using DotPulsar.Exceptions;
+using DotPulsar.Internal.Abstractions;
 using DotPulsar.Internal.Extensions;
 using DotPulsar.Internal.PulsarApi;
 using System;
@@ -9,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace DotPulsar.Internal
 {
-    public sealed class ConnectionPool : IAsyncDisposable
+    public sealed class ConnectionPool : IConnectionPool
     {
         private readonly AsyncLock _lock;
         private readonly CommandConnect _commandConnect;
@@ -46,7 +47,7 @@ namespace DotPulsar.Internal
             }
         }
 
-        public async Task<Connection> FindConnectionForTopic(string topic, CancellationToken cancellationToken)
+        public async ValueTask<IConnection> FindConnectionForTopic(string topic, CancellationToken cancellationToken)
         {
             var lookup = new CommandLookupTopic
             {
@@ -102,7 +103,7 @@ namespace DotPulsar.Internal
             }
         }
 
-        private async Task<Connection> CreateConnection(Uri serviceUrl, CancellationToken cancellationToken)
+        private async ValueTask<Connection> CreateConnection(Uri serviceUrl, CancellationToken cancellationToken)
         {
 
             using (await _lock.Lock(cancellationToken))

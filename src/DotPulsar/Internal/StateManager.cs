@@ -1,10 +1,10 @@
-﻿using DotPulsar.Abstractions;
+﻿using DotPulsar.Internal.Abstractions;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace DotPulsar.Internal
 {
-    public sealed class StateManager<TState> : IStateChanged<TState> where TState : notnull
+    public sealed class StateManager<TState> : IStateManager<TState> where TState : notnull
     {
         private readonly object _lock;
         private readonly StateTaskCollection<TState> _stateTasks;
