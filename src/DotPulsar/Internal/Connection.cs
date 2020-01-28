@@ -1,8 +1,6 @@
 ﻿using DotPulsar.Internal.Abstractions;
 using DotPulsar.Internal.Extensions;
 using DotPulsar.Internal.PulsarApi;
-using System.Buffers;
-using System.IO;
 using System.Threading.Tasks;
 
 namespace DotPulsar.Internal
@@ -16,17 +14,16 @@ namespace DotPulsar.Internal
         private readonly PingPongHandler _pingPongHandler;
         private readonly PulsarStream _stream;
 
-        public Connection(Stream stream)
+        public Connection(PulsarStream stream)
         {
             _lock = new AsyncLock();
             _producerManager = new ProducerManager();
             _consumerManager = new ConsumerManager();
             _requestResponseHandler = new RequestResponseHandler();
             _pingPongHandler = new PingPongHandler(this);
-            _stream = new PulsarStream(stream, HandleCommand);
+            _stream = stream;
+            _ = ProcessStream();
         }
-
-        public Task IsClosed => _stream.IsClosed;
 
         public async ValueTask<bool> IsActive()
         {
@@ -148,33 +145,39 @@ namespace DotPulsar.Internal
             }
         }
 
-        private void HandleCommand(uint commandSize, ReadOnlySequence<byte> sequence)
+        private async Task ProcessStream()
         {
-            var command = Serializer.Deserialize<BaseCommand>(sequence.Slice(0, commandSize));
+            await Task.Yield();
 
-            switch (command.CommandType)
+            await foreach (var frame in _stream.Frames(default))
             {
-                case BaseCommand.Type.Message:
-                    _consumerManager.Incoming(command.Message, sequence.Slice(commandSize));
-                    return;
-                case BaseCommand.Type.CloseConsumer:
-                    _consumerManager.Incoming(command.CloseConsumer);
-                    return;
-                case BaseCommand.Type.ActiveConsumerChange:
-                    _consumerManager.Incoming(command.ActiveConsumerChange);
-                    return;
-                case BaseCommand.Type.ReachedEndOfTopic:
-                    _consumerManager.Incoming(command.ReachedEndOfTopic);
-                    return;
-                case BaseCommand.Type.CloseProducer:
-                    _producerManager.Incoming(command.CloseProducer);
-                    return;
-                case BaseCommand.Type.Ping:
-                    _pingPongHandler.Incoming(command.Ping);
-                    return;
-                default:
-                    _requestResponseHandler.Incoming(command);
-                    return;
+                var commandSize = frame.ReadUInt32(0, true);
+                var command = Serializer.Deserialize<BaseCommand>(frame.Slice(4, commandSize));
+
+                switch (command.CommandType)
+                {
+                    case BaseCommand.Type.Message:
+                        _consumerManager.Incoming(command.Message, frame.Slice(commandSize + 4));
+                        break;
+                    case BaseCommand.Type.CloseConsumer:
+                        _consumerManager.Incoming(command.CloseConsumer);
+                        break;
+                    case BaseCommand.Type.ActiveConsumerChange:
+                        _consumerManager.Incoming(command.ActiveConsumerChange);
+                        break;
+                    case BaseCommand.Type.ReachedEndOfTopic:
+                        _consumerManager.Incoming(command.ReachedEndOfTopic);
+                        break;
+                    case BaseCommand.Type.CloseProducer:
+                        _producerManager.Incoming(command.CloseProducer);
+                        break;
+                    case BaseCommand.Type.Ping:
+                        _pingPongHandler.Incoming(command.Ping);
+                        break;
+                    default:
+                        _requestResponseHandler.Incoming(command);
+                        break;
+                }
             }
         }
 

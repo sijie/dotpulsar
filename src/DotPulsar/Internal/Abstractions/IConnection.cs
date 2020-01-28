@@ -6,8 +6,6 @@ namespace DotPulsar.Internal.Abstractions
 {
     public interface IConnection : IAsyncDisposable
     {
-        public Task IsClosed { get; }
-
         ValueTask<bool> IsActive();
 
         Task<ProducerResponse> Send(CommandProducer command, IProducerProxy proxy);

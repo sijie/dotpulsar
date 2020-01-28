@@ -113,7 +113,7 @@ namespace DotPulsar.Internal
 
                 var stream = await _connector.Connect(serviceUrl);
 
-                connection = new Connection(stream);
+                connection = new Connection(new PulsarStream(stream));
                 Register(serviceUrl, connection);
 
                 var response = await connection.Send(_commandConnect);
@@ -126,7 +126,7 @@ namespace DotPulsar.Internal
         private void Register(Uri serviceUrl, Connection connection)
         {
             _connections[serviceUrl] = connection;
-            connection.IsClosed.ContinueWith(async t => await Deregister(serviceUrl));
+            //connection.IsClosed.ContinueWith(async t => await Deregister(serviceUrl)); TODO!!!
         }
 
         private async ValueTask Deregister(Uri serviceUrl)
