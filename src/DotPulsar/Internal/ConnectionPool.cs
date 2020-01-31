@@ -31,7 +31,7 @@ namespace DotPulsar.Internal
             _encryptionPolicy = encryptionPolicy;
             _connections = new ConcurrentDictionary<Uri, Connection>();
             _cancellationTokenSource = new CancellationTokenSource();
-            _closeInactiveConnections = CloseInactiveConnections(TimeSpan.FromSeconds(60), _cancellationTokenSource.Token);
+            _closeInactiveConnections = CloseInactiveConnections(TimeSpan.FromSeconds(60), _cancellationTokenSource.Token);  //TODO Get '60' from configuration
         }
 
         public async ValueTask DisposeAsync()
@@ -105,7 +105,6 @@ namespace DotPulsar.Internal
 
         private async ValueTask<Connection> CreateConnection(Uri serviceUrl, CancellationToken cancellationToken)
         {
-
             using (await _lock.Lock(cancellationToken))
             {
                 if (_connections.TryGetValue(serviceUrl, out Connection connection))

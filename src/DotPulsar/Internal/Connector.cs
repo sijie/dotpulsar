@@ -74,14 +74,14 @@ namespace DotPulsar.Internal
                 await sslStream.AuthenticateAsClientAsync(host, _clientCertificates, SslProtocols.None, true);
                 return sslStream;
             }
-            catch (System.Security.Authentication.AuthenticationException exception)
+            catch
             {
                 if (sslStream is null)
                     stream.Dispose();
                 else
                     sslStream.Dispose();
 
-                throw new DotPulsar.Exceptions.AuthenticationException("Got an authentication exception while trying to establish an encrypted connection. See inner exception for details.", exception);
+                throw;
             }
         }
 

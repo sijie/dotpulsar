@@ -118,7 +118,7 @@ namespace DotPulsar.Internal
                         if (buffer.Length < totalSize)
                             break;
 
-                        yield return buffer.Slice(4, totalSize - 4);
+                        yield return buffer.Slice(4, frameSize);
 
                         buffer = buffer.Slice(totalSize);
                     }
